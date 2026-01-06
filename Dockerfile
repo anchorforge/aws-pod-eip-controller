@@ -1,4 +1,5 @@
-FROM public.ecr.aws/docker/library/golang:1.25.3 AS builder
+ARG GOLANG_VERSION=1.25.3
+FROM public.ecr.aws/docker/library/golang:${GOLANG_VERSION} AS builder
 
 WORKDIR /workspace
 COPY go.mod go.sum ./
@@ -10,7 +11,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build
 
-FROM public.ecr.aws/docker/library/alpine:3.22.2
+ARG ALPINE_VERSION=3.22.2
+FROM public.ecr.aws/docker/library/alpine:${ALPINE_VERSION}
 
 ENV USER=eipcontroller
 ENV GROUPNAME=$USER

@@ -1,0 +1,130 @@
+name: Build AWS Pod EIP Controller
+
+on:
+  workflow_dispatch:
+    inputs:
+      eip_controller_version:
+        description: 'AWS Pod EIP Controller version (from upstream tags)'
+        required: true
+        default: 'v1.3.0'
+        type: choice
+        options:
+          - 'v1.3.0'
+          - 'v1.2.4'
+          - 'v1.2.3'
+          - 'v1.2.2'
+          - 'v1.2.1'
+          - 'v1.2.0'
+          - 'v1.1.2'
+          - 'v1.1.1'
+          - 'v1.0.1'
+      anchor_build_revision:
+        description: 'Anchor build revision (e.g., 1, 2, 3)'
+        required: true
+        default: '1'
+      golang_version:
+        description: 'Go version for builder image'
+        required: true
+        default: '1.25.3'
+      alpine_version:
+        description: 'Alpine Linux version for runtime image'
+        required: true
+        default: '3.22.2'
+
+env:
+  ECR_REGISTRY: 147997135271.dkr.ecr.us-east-2.amazonaws.com
+  ECR_REPOSITORY: aws-pod-eip-controller
+  AWS_REGION: us-east-2
+
+jobs:
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.eip_controller_version }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::147997135271:role/GithubActions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create ECR repository if not exists
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} 2>/dev/null || \
+          aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }}
+
+      - name: Generate image tags
+        id: tags
+        run: |
+          EIP_CONTROLLER_VERSION="${{ github.event.inputs.eip_controller_version }}"
+          ANCHOR_BUILD_REVISION="${{ github.event.inputs.anchor_build_revision }}"
+          GOLANG_VERSION="${{ github.event.inputs.golang_version }}"
+          ALPINE_VERSION="${{ github.event.inputs.alpine_version }}"
+          
+          # Remove 'v' prefix from version for cleaner tag
+          VERSION_CLEAN="${EIP_CONTROLLER_VERSION#v}"
+          
+          # Format: {version}-r{revision}
+          # Example: 1.3.0-r1
+          VERSION_TAG="${VERSION_CLEAN}-r${ANCHOR_BUILD_REVISION}"
+          
+          echo "version_tag=${VERSION_TAG}" >> $GITHUB_OUTPUT
+          echo "eip_controller_version=${EIP_CONTROLLER_VERSION}" >> $GITHUB_OUTPUT
+          echo "golang_version=${GOLANG_VERSION}" >> $GITHUB_OUTPUT
+          echo "alpine_version=${ALPINE_VERSION}" >> $GITHUB_OUTPUT
+          
+          echo "📦 Image tags:"
+          echo "  - ${VERSION_TAG}"
+          echo "  - latest"
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            GOLANG_VERSION=${{ steps.tags.outputs.golang_version }}
+            ALPINE_VERSION=${{ steps.tags.outputs.alpine_version }}
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.tags.outputs.version_tag }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image details
+        run: |
+          echo "✅ Successfully built and pushed aws-pod-eip-controller"
+          echo ""
+          echo "📦 Image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}"
+          echo "🏷️  Tags:"
+          echo "   - ${{ steps.tags.outputs.version_tag }}"
+          echo "   - latest"
+          echo ""
+          echo "🔧 Configuration:"
+          echo "   - EIP Controller Version: ${{ steps.tags.outputs.eip_controller_version }}"
+          echo "   - Go Version: ${{ steps.tags.outputs.golang_version }}"
+          echo "   - Alpine Version: ${{ steps.tags.outputs.alpine_version }}"
+          echo "   - Anchor Build Revision: ${{ github.event.inputs.anchor_build_revision }}"
+          echo ""
+          echo "📋 To use this image, update your deployment:"
+          echo "   image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.tags.outputs.version_tag }}"
+
